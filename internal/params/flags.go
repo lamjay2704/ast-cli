@@ -91,6 +91,8 @@ const (
 	GitHubURLFlag            = "url"
 	GitHubURLFlagUsage       = "API base URL"
 	QueryIDFlag              = "query-id"
+	DetailsFlag              = "details"
+	DetailsFlagUsage         = "Get details like bfl and codebashing."
 )
 
 // Parameter values

@@ -57,12 +57,15 @@ var filterResultsListFlagUsage = fmt.Sprintf(
 	),
 )
 
+var bflWrapperGlobal wrappers.BflWrapper
+var detailsParam string
+
 // NewResultCommand - Deprecated command
-func NewResultCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wrappers.ScansWrapper) *cobra.Command {
+func NewResultCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wrappers.ScansWrapper, bflWrapper wrappers.BflWrapper) *cobra.Command {
 	resultCmd := &cobra.Command{
 		Use:   "result",
 		Short: "Retrieve results",
-		RunE:  runGetResultCommand(resultsWrapper, scanWrapper),
+		RunE:  runGetResultCommand(resultsWrapper, scanWrapper, bflWrapper),
 	}
 	addScanIDFlag(resultCmd, "ID to report on.")
 	addResultFormatFlag(
@@ -92,7 +95,7 @@ func NewResultsCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wrapp
 			),
 		},
 	}
-	showResultCmd := resultShowSubCommand(resultsWrapper, scanWrapper)
+	showResultCmd := resultShowSubCommand(resultsWrapper, scanWrapper, bflWrapper)
 	bflResultCmd := resultBflSubCommand(bflWrapper)
 	resultsCmd.AddCommand(
 		showResultCmd, bflResultCmd,
@@ -100,7 +103,7 @@ func NewResultsCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wrapp
 	return resultsCmd
 }
 
-func resultShowSubCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wrappers.ScansWrapper) *cobra.Command {
+func resultShowSubCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wrappers.ScansWrapper, bflWrapper wrappers.BflWrapper) *cobra.Command {
 	resultShowCmd := &cobra.Command{
 		Use:   "show",
 		Short: "Show results of a scan",
@@ -110,7 +113,7 @@ func resultShowSubCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wr
 			$ cx results show --scan-id <scan Id>
 		`,
 		),
-		RunE: runGetResultCommand(resultsWrapper, scanWrapper),
+		RunE: runGetResultCommand(resultsWrapper, scanWrapper, bflWrapper),
 	}
 	addScanIDFlag(resultShowCmd, "ID to report on.")
 	addResultFormatFlag(
@@ -124,6 +127,7 @@ func resultShowSubCommand(resultsWrapper wrappers.ResultsWrapper, scanWrapper wr
 	resultShowCmd.PersistentFlags().String(commonParams.TargetFlag, "cx_result", "Output file")
 	resultShowCmd.PersistentFlags().String(commonParams.TargetPathFlag, ".", "Output Path")
 	resultShowCmd.PersistentFlags().StringSlice(commonParams.FilterFlag, []string{}, filterResultsListFlagUsage)
+	resultShowCmd.PersistentFlags().String(commonParams.DetailsFlag, "", commonParams.DetailsFlagUsage)
 	return resultShowCmd
 }
 
@@ -141,7 +145,7 @@ func resultBflSubCommand(bflWrapper wrappers.BflWrapper) *cobra.Command {
 	}
 	addScanIDFlag(resultBflCmd, "ID to report on.")
 	addQueryIDFlag(resultBflCmd, "Query Id from the result.")
-	addFormatFlag(resultBflCmd, util.FormatList, util.FormatJSON)
+	addFormatFlag(resultBflCmd, printer.FormatList, printer.FormatJSON)
 
 	markFlagAsRequired(resultBflCmd, commonParams.ScanIDFlag)
 	markFlagAsRequired(resultBflCmd, commonParams.QueryIDFlag)
@@ -327,12 +331,15 @@ func writeConsoleSummary(summary *wrappers.ResultSummary) error {
 func runGetResultCommand(
 	resultsWrapper wrappers.ResultsWrapper,
 	scanWrapper wrappers.ScansWrapper,
+	bflWrapper wrappers.BflWrapper,
 ) func(cmd *cobra.Command, args []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		targetFile, _ := cmd.Flags().GetString(commonParams.TargetFlag)
 		targetPath, _ := cmd.Flags().GetString(commonParams.TargetPathFlag)
 		format, _ := cmd.Flags().GetString(commonParams.TargetFormatFlag)
 		scanID, _ := cmd.Flags().GetString(commonParams.ScanIDFlag)
+		detailsParam, _ = cmd.Flags().GetString(commonParams.DetailsFlag)
+		bflWrapperGlobal = bflWrapper
 		params, err := getFilters(cmd)
 		if err != nil {
 			return errors.Wrapf(err, "%s", failedListingResults)
@@ -361,6 +368,11 @@ func CreateScanReport(
 	if err != nil {
 		return err
 	}
+	if results.TotalCount > 0 && detailsParam == "bfl" {
+		log.Println("BFL will be included in results.")
+		results, err = GetBFLforResults(bflWrapperGlobal, scanID, results)
+	}
+
 	summary, err := SummaryReport(scanWrapper, results, scanID)
 	if err != nil {
 		return err
@@ -423,6 +435,56 @@ func createDirectory(targetPath string) error {
 		}
 	}
 	return nil
+}
+
+func GetBFLforResults(bflWrapper wrappers.BflWrapper, scanID string, results *wrappers.ScanResultsCollection) (detailedResults *wrappers.ScanResultsCollection, err error) {
+
+	for _, result := range results.Results {
+
+		engineType := strings.TrimSpace(result.Type)
+
+		if engineType == commonParams.SastType {
+			queryID := fmt.Sprintf("%v", result.ScanResultData.QueryID)
+
+			params := make(map[string]string)
+			params[commonParams.ScanIDQueryParam] = scanID
+			params[commonParams.QueryIDQueryParam] = queryID
+
+			bflResponseModel, errorModel, err := bflWrapper.GetBflByScanIDAndQueryID(params)
+			if err != nil {
+				return nil, errors.Wrapf(err, "%s", failedGettingBfl)
+			}
+			// Checking the response
+			if errorModel != nil {
+				return nil, errors.Errorf("%s: CODE: %d, %s", failedGettingBfl, errorModel.Code, errorModel.Message)
+			} else if bflResponseModel != nil {
+				log.Printf(fmt.Sprintf("Found [%d] best fix location(s) for QueryId: %s ", bflResponseModel.TotalCount, queryID))
+				compareBFLResponsewithResults(bflResponseModel, &result.ScanResultData, err)
+
+			}
+
+		}
+
+	}
+	return nil, nil
+}
+
+func compareBFLResponsewithResults(bflResponseModel *wrappers.BFLResponseModel, scanResultData *wrappers.ScanResultData, err error) {
+
+	for _, bflTree := range bflResponseModel.Trees {
+
+		bflNode := bflTree.BFL
+		for _, node := range scanResultData.Nodes {
+
+			if node.Line == bflNode.Line && node.Column == bflNode.Column {
+				node.BFL = "true"
+			} else {
+				node.BFL = "false"
+			}
+
+		}
+	}
+
 }
 
 func ReadResults(

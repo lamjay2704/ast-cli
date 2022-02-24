@@ -59,6 +59,7 @@ type ScanResultNode struct {
 	TypeName    string `json:"typeName,omitempty"`
 	MethodLine  uint   `json:"methodLine,omitempty"`
 	Definitions string `json:"definitions,omitempty"`
+	BFL         string `json:"bfl,omitempty"`
 }
 
 type ScanResultPackageData struct {
