@@ -1,4 +1,4 @@
-FROM golang:1.16.6-alpine3.14 as build-env
+FROM golang:1-alpine3.14 as build-env
 
 ARG GIT_TOKEN
 
@@ -27,7 +27,7 @@ COPY .. .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 GOPRIVATE="" go build -a -installsuffix cgo -o bin/cx cmd/main.go
 
 #runtime image
-FROM golang:1.16.6-alpine3.14
+FROM golang:1-alpine3.14
 
 COPY --from=build-env /app/bin/cx /app/bin/cx
 
